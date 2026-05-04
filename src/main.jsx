@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
 
-const kakaoJsKey = import.meta.env.VITE_KAKAO_JS_KEY
+const kakaoJsKey = 'f756aef8a9d7573742de8b220ee1db1b'
 
 if (kakaoJsKey && window.Kakao && !window.Kakao.isInitialized()) {
   try {
@@ -11,8 +11,8 @@ if (kakaoJsKey && window.Kakao && !window.Kakao.isInitialized()) {
   } catch (e) {
     console.error('Kakao init error:', e)
   }
-} else if (!kakaoJsKey) {
-  console.warn('VITE_KAKAO_JS_KEY is not set; Kakao login will be unavailable.')
+} else if (!window.Kakao) {
+  console.warn('Kakao SDK is not loaded; Kakao login will be unavailable.')
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />)
