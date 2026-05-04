@@ -23,10 +23,18 @@ function Message({ msg }) {
   )
 }
 
+function getVisitCount(user) {
+  const rawCount = user?.visit_count ?? user?.visitCount ?? user?.login_count ?? user?.loginCount ?? user?.visits
+  const count = Number(rawCount)
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 1
+}
+
 export default function ChatPanel({ messages, isProcessing, onSend, connected, isListening, onToggleMic, micEnabled, user, onLoginClick, onLogout }) {
   const [input, setInput]       = useState('')
   const bottomRef               = useRef(null)
   const textareaRef             = useRef(null)
+  const displayName             = user?.name || user?.nickname || '사용자'
+  const visitCount              = getVisitCount(user)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -64,17 +72,19 @@ export default function ChatPanel({ messages, isProcessing, onSend, connected, i
           <span className={styles.headerTitle}>면담 대화</span>
         </div>
         {user ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className={styles.headerSub}>{user.name}님</span>
+          <div className={styles.userArea}>
+            <span className={`${styles.headerSub} ${styles.userGreeting}`}>
+              {displayName}님 {visitCount}번째 방문을 환영합니다.
+            </span>
             <button
               onClick={onLogout}
-              style={{ background: 'transparent', border: '1px solid #2a2a32', color: '#888', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}
+              className={styles.logoutBtn}
             >로그아웃</button>
           </div>
         ) : (
           <button
             onClick={onLoginClick}
-            style={{ background: '#2a2a32', border: 'none', color: '#e6e6e6', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer' }}
+            className={styles.loginBtn}
           >로그인</button>
         )}
       </div>
