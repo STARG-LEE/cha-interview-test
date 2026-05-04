@@ -8,6 +8,40 @@ import { getUser, clearAuth, verifyToken, newSessionId, saveChat } from './lib/a
 const AVATAR_ID = 'e2eb35c947644f09820aa3a4f9c15488'
 const VOICE_ID  = '15d128072e194dc399d2898967941897'
 
+function isMobileSpeechBrowser() {
+  if (typeof navigator === 'undefined') return false
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')
+}
+
+function getEchoGuardMs() {
+  return isMobileSpeechBrowser() ? 2400 : 1200
+}
+
+function getSilenceMs() {
+  return isMobileSpeechBrowser() ? 1600 : 2000
+}
+
+function normalizeTranscript(text) {
+  return (text || '').replace(/\s+/g, ' ').trim()
+}
+
+function mergeTranscript(previous, next) {
+  const prev = normalizeTranscript(previous)
+  const incoming = normalizeTranscript(next)
+  if (!prev) return incoming
+  if (!incoming) return prev
+  if (prev.includes(incoming)) return prev
+  if (incoming.includes(prev)) return incoming
+
+  for (let len = Math.min(prev.length, incoming.length); len >= 2; len--) {
+    if (prev.slice(-len) === incoming.slice(0, len)) {
+      return normalizeTranscript(prev + incoming.slice(len))
+    }
+  }
+
+  return normalizeTranscript(`${prev} ${incoming}`)
+}
+
 async function callProxy(endpoint, payload) {
   const res = await fetch('/api/heygen-proxy', {
     method: 'POST',
@@ -61,6 +95,7 @@ export default function App() {
   const restartTimerRef   = useRef(null)
   const recognitionStartingRef = useRef(false)
   const startListeningRef = useRef(null)
+  const lastSubmittedSpeechRef = useRef({ key: '', at: 0 })
 
   useEffect(() => { isProcessingRef.current = isProcessing }, [isProcessing])
   useEffect(() => { autoListenRef.current   = autoListen }, [autoListen])
@@ -82,10 +117,11 @@ export default function App() {
 
   // ─── HeyGen interrupt ────────────────────────────
   const interruptAvatar = useCallback(async () => {
-    echoGuardUntilRef.current = Date.now() + 1800
+    echoGuardUntilRef.current = Date.now() + getEchoGuardMs() + 600
     clearListeningRestart()
     recognitionStartingRef.current = false
     clearTimeout(silenceTimerRef.current)
+    silenceTimerRef.current = null
     accumulatedFinalRef.current = ''
     if (recognitionRef.current) {
       try { recognitionRef.current.abort() } catch {}
@@ -171,6 +207,7 @@ export default function App() {
     clearListeningRestart()
     recognitionStartingRef.current = false
     clearTimeout(silenceTimerRef.current)
+    silenceTimerRef.current = null
     accumulatedFinalRef.current = ''
     setIsListening(false)
     isListeningRef.current = false
@@ -181,6 +218,7 @@ export default function App() {
 
   const startListening = useCallback(() => {
     clearListeningRestart()
+    if (silenceTimerRef.current || accumulatedFinalRef.current.trim()) return
     if (!recognitionRef.current || isListeningRef.current || recognitionStartingRef.current || isProcessingRef.current) return
     if (!sessionRef.current) return
     const wait = Math.max(0, echoGuardUntilRef.current - Date.now() + 100)
@@ -206,6 +244,20 @@ export default function App() {
     startListeningRef.current = startListening
   }, [startListening])
 
+  const submitSpeechText = useCallback((rawText) => {
+    const text = normalizeTranscript(rawText)
+    if (!text) return
+
+    const key = text.replace(/\s+/g, '')
+    const now = Date.now()
+    const last = lastSubmittedSpeechRef.current
+
+    stopListening()
+    if (key === last.key && now - last.at < 8000) return
+    lastSubmittedSpeechRef.current = { key, at: now }
+    sendMessage(text)
+  }, [sendMessage, stopListening])
+
   const initRecognition = useCallback(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SR) {
@@ -214,9 +266,10 @@ export default function App() {
     }
 
     const rec = new SR()
+    const mobileSpeech = isMobileSpeechBrowser()
     rec.lang            = 'ko-KR'
-    rec.interimResults  = true
-    rec.continuous      = true
+    rec.interimResults  = !mobileSpeech
+    rec.continuous      = !mobileSpeech
     rec.maxAlternatives = 1
 
     rec.onstart = () => {
@@ -227,10 +280,11 @@ export default function App() {
 
     rec.onresult = async (event) => {
       clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
       let interim = '', final = ''
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript
-        if (event.results[i].isFinal) final += t
+        if (event.results[i].isFinal) final = mergeTranscript(final, t)
         else interim += t
       }
 
@@ -240,24 +294,22 @@ export default function App() {
       }
 
       if (final.trim()) {
-        accumulatedFinalRef.current += final
+        accumulatedFinalRef.current = mergeTranscript(accumulatedFinalRef.current, final)
         silenceTimerRef.current = setTimeout(() => {
+          silenceTimerRef.current = null
           const text = accumulatedFinalRef.current.trim()
           accumulatedFinalRef.current = ''
-          if (text) {
-            stopListening()
-            sendMessage(text)
-          }
-        }, 2000)
+          submitSpeechText(text)
+        }, getSilenceMs())
       } else if (interim) {
         silenceTimerRef.current = setTimeout(() => {
-          const text = (accumulatedFinalRef.current + interim).trim()
+          silenceTimerRef.current = null
+          const text = mergeTranscript(accumulatedFinalRef.current, interim)
           if (text && text.length > 1) {
             accumulatedFinalRef.current = ''
-            stopListening()
-            sendMessage(text)
+            submitSpeechText(text)
           }
-        }, 2000)
+        }, getSilenceMs())
       }
     }
 
@@ -268,7 +320,7 @@ export default function App() {
         autoListenRef.current = false
         setAutoListen(false)
       } else if (event.error === 'no-speech') {
-        if (autoListenRef.current && sessionRef.current && !isProcessingRef.current && !isSpeakingRef.current && Date.now() >= echoGuardUntilRef.current) {
+        if (autoListenRef.current && sessionRef.current && !silenceTimerRef.current && !accumulatedFinalRef.current.trim() && !isProcessingRef.current && !isSpeakingRef.current && Date.now() >= echoGuardUntilRef.current) {
           scheduleStartListening(500)
         }
       }
@@ -281,18 +333,19 @@ export default function App() {
       isListeningRef.current = false
       setIsListening(false)
       // 자동 listening 모드면 재시작
-      if (autoListenRef.current && sessionRef.current && !isProcessingRef.current && !isSpeakingRef.current && Date.now() >= echoGuardUntilRef.current) {
+      if (autoListenRef.current && sessionRef.current && !silenceTimerRef.current && !accumulatedFinalRef.current.trim() && !isProcessingRef.current && !isSpeakingRef.current && Date.now() >= echoGuardUntilRef.current) {
         scheduleStartListening(600)
       }
     }
 
     recognitionRef.current = rec
     return true
-  }, [sendMessage, scheduleStartListening, stopListening])
+  }, [scheduleStartListening, submitSpeechText])
 
   // 답변 끝나면 (isProcessing false + autoListen 켜져있으면) 자동 마이크 재시작
   useEffect(() => {
     if (!isProcessing && autoListen && sessionRef.current && !isListeningRef.current && !isSpeakingRef.current) {
+      if (silenceTimerRef.current || accumulatedFinalRef.current.trim()) return
       scheduleStartListening(500)
       return clearListeningRestart
     }
@@ -302,15 +355,17 @@ export default function App() {
   // status === 'speaking' 들어오면 STT off, 'connected'로 빠지면 다시 on (autoListen 켜져있을 때만)
   useEffect(() => {
     if (status === 'speaking') {
-      echoGuardUntilRef.current = Date.now() + 1200
+      echoGuardUntilRef.current = Date.now() + getEchoGuardMs()
       clearListeningRestart()
       recognitionStartingRef.current = false
+      isListeningRef.current = false
+      setIsListening(false)
       // 발화 시작 → 마이크 즉시 abort (stop은 마지막 결과 emit, abort는 즉시 종료)
       if (recognitionRef.current) {
         try { recognitionRef.current.abort() } catch {}
         try { recognitionRef.current.stop() } catch {}
       }
-    } else if (status === 'connected' && autoListenRef.current && !isListeningRef.current && !isProcessingRef.current) {
+    } else if (status === 'connected' && autoListenRef.current && !silenceTimerRef.current && !accumulatedFinalRef.current.trim() && !isListeningRef.current && !isProcessingRef.current) {
       // 발화 종료 → 잠시 후 마이크 다시 on (트랙 잔향 회피 위해 1초 지연)
       const delay = Math.max(1000, echoGuardUntilRef.current - Date.now() + 100)
       scheduleStartListening(delay)
@@ -367,6 +422,7 @@ export default function App() {
     // STT 중지
     clearListeningRestart()
     recognitionStartingRef.current = false
+    lastSubmittedSpeechRef.current = { key: '', at: 0 }
     autoListenRef.current = false
     setAutoListen(false)
     if (recognitionRef.current) {
@@ -403,6 +459,7 @@ export default function App() {
   const startAvatar = useCallback(async () => {
     setStatus('connecting')
     sessionIdRef.current = newSessionId()  // 새 세션 ID
+    lastSubmittedSpeechRef.current = { key: '', at: 0 }
     try {
       const tokenRes = await fetch('/api/heygen-token', { method: 'POST' }).then(r => r.json())
       if (!tokenRes.token) throw new Error('HeyGen 토큰 발급 실패: ' + JSON.stringify(tokenRes))
