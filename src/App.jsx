@@ -58,15 +58,33 @@ export default function App() {
   const autoListenRef     = useRef(false)
   const isListeningRef    = useRef(false)
   const echoGuardUntilRef = useRef(0)
+  const restartTimerRef   = useRef(null)
+  const recognitionStartingRef = useRef(false)
+  const startListeningRef = useRef(null)
 
   useEffect(() => { isProcessingRef.current = isProcessing }, [isProcessing])
   useEffect(() => { autoListenRef.current   = autoListen }, [autoListen])
   useEffect(() => { isListeningRef.current  = isListening }, [isListening])
   useEffect(() => { isSpeakingRef.current   = (status === 'speaking') }, [status])
 
+  const clearListeningRestart = useCallback(() => {
+    clearTimeout(restartTimerRef.current)
+    restartTimerRef.current = null
+  }, [])
+
+  const scheduleStartListening = useCallback((delay = 600) => {
+    clearListeningRestart()
+    restartTimerRef.current = setTimeout(() => {
+      restartTimerRef.current = null
+      startListeningRef.current?.()
+    }, delay)
+  }, [clearListeningRestart])
+
   // ─── HeyGen interrupt ────────────────────────────
   const interruptAvatar = useCallback(async () => {
     echoGuardUntilRef.current = Date.now() + 1800
+    clearListeningRestart()
+    recognitionStartingRef.current = false
     clearTimeout(silenceTimerRef.current)
     accumulatedFinalRef.current = ''
     if (recognitionRef.current) {
@@ -84,7 +102,7 @@ export default function App() {
     }
     isSpeakingRef.current = false
     setStatus('connected')
-  }, [])
+  }, [clearListeningRestart])
 
   // ─── 메시지 전송 ───────────────────────────────────
   const sendMessage = useCallback(async (userText) => {
@@ -95,6 +113,7 @@ export default function App() {
       console.warn('[echo guard] sendMessage suppressed during avatar speaking:', text.slice(0, 30))
       return
     }
+    isProcessingRef.current = true
     setIsProcessing(true)
 
     setMessages(prev => [...prev, { role: 'user', text }])
@@ -142,12 +161,15 @@ export default function App() {
         return next
       })
     } finally {
+      isProcessingRef.current = false
       setIsProcessing(false)
     }
   }, [])
 
   // ─── STT (Web Speech API) ────────────────────────
   const stopListening = useCallback(() => {
+    clearListeningRestart()
+    recognitionStartingRef.current = false
     clearTimeout(silenceTimerRef.current)
     accumulatedFinalRef.current = ''
     setIsListening(false)
@@ -155,14 +177,34 @@ export default function App() {
     if (recognitionRef.current) {
       try { recognitionRef.current.stop() } catch {}
     }
-  }, [])
+  }, [clearListeningRestart])
 
   const startListening = useCallback(() => {
-    if (!recognitionRef.current || isListeningRef.current || isProcessingRef.current) return
+    clearListeningRestart()
+    if (!recognitionRef.current || isListeningRef.current || recognitionStartingRef.current || isProcessingRef.current) return
     if (!sessionRef.current) return
-    if (isSpeakingRef.current || Date.now() < echoGuardUntilRef.current) return
-    try { recognitionRef.current.start() } catch {}
-  }, [])
+    const wait = Math.max(0, echoGuardUntilRef.current - Date.now() + 100)
+    if (isSpeakingRef.current || wait > 0) {
+      if (autoListenRef.current) scheduleStartListening(Math.max(400, wait))
+      return
+    }
+    recognitionStartingRef.current = true
+    try {
+      recognitionRef.current.start()
+    } catch (e) {
+      recognitionStartingRef.current = false
+      const retryable = e?.name === 'InvalidStateError' || /already|started|busy/i.test(e?.message || '')
+      if (autoListenRef.current && retryable) {
+        scheduleStartListening(350)
+      } else {
+        console.warn('speech recognition start failed:', e)
+      }
+    }
+  }, [clearListeningRestart, scheduleStartListening])
+
+  useEffect(() => {
+    startListeningRef.current = startListening
+  }, [startListening])
 
   const initRecognition = useCallback(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -178,6 +220,7 @@ export default function App() {
     rec.maxAlternatives = 1
 
     rec.onstart = () => {
+      recognitionStartingRef.current = false
       isListeningRef.current = true
       setIsListening(true)
     }
@@ -219,15 +262,14 @@ export default function App() {
     }
 
     rec.onerror = (event) => {
+      recognitionStartingRef.current = false
       if (event.error === 'not-allowed') {
         alert('마이크 권한이 필요해요.\n브라우저 주소창 왼쪽의 자물쇠 아이콘을 클릭하여 마이크를 허용해주세요.')
         autoListenRef.current = false
         setAutoListen(false)
       } else if (event.error === 'no-speech') {
         if (autoListenRef.current && sessionRef.current && !isProcessingRef.current && !isSpeakingRef.current && Date.now() >= echoGuardUntilRef.current) {
-          setTimeout(() => {
-            if (!isSpeakingRef.current && Date.now() >= echoGuardUntilRef.current) startListening()
-          }, 500)
+          scheduleStartListening(500)
         }
       }
       isListeningRef.current = false
@@ -235,33 +277,34 @@ export default function App() {
     }
 
     rec.onend = () => {
+      recognitionStartingRef.current = false
       isListeningRef.current = false
       setIsListening(false)
       // 자동 listening 모드면 재시작
       if (autoListenRef.current && sessionRef.current && !isProcessingRef.current && !isSpeakingRef.current && Date.now() >= echoGuardUntilRef.current) {
-        setTimeout(() => {
-          if (!isSpeakingRef.current && Date.now() >= echoGuardUntilRef.current) startListening()
-        }, 600)
+        scheduleStartListening(600)
       }
     }
 
     recognitionRef.current = rec
     return true
-  }, [interruptAvatar, sendMessage, startListening, stopListening])
+  }, [sendMessage, scheduleStartListening, stopListening])
 
   // 답변 끝나면 (isProcessing false + autoListen 켜져있으면) 자동 마이크 재시작
   useEffect(() => {
     if (!isProcessing && autoListen && sessionRef.current && !isListeningRef.current && !isSpeakingRef.current) {
-      const t = setTimeout(() => startListening(), 500)
-      return () => clearTimeout(t)
+      scheduleStartListening(500)
+      return clearListeningRestart
     }
-  }, [isProcessing, autoListen, startListening])
+  }, [isProcessing, autoListen, scheduleStartListening, clearListeningRestart])
 
   // ─── 봇 발화 중 마이크 stop (echo로 봇 음성이 새 질문이 되는 무한루프 방지) ───
   // status === 'speaking' 들어오면 STT off, 'connected'로 빠지면 다시 on (autoListen 켜져있을 때만)
   useEffect(() => {
     if (status === 'speaking') {
       echoGuardUntilRef.current = Date.now() + 1200
+      clearListeningRestart()
+      recognitionStartingRef.current = false
       // 발화 시작 → 마이크 즉시 abort (stop은 마지막 결과 emit, abort는 즉시 종료)
       if (recognitionRef.current) {
         try { recognitionRef.current.abort() } catch {}
@@ -270,10 +313,10 @@ export default function App() {
     } else if (status === 'connected' && autoListenRef.current && !isListeningRef.current && !isProcessingRef.current) {
       // 발화 종료 → 잠시 후 마이크 다시 on (트랙 잔향 회피 위해 1초 지연)
       const delay = Math.max(1000, echoGuardUntilRef.current - Date.now() + 100)
-      const t = setTimeout(() => startListening(), delay)
-      return () => clearTimeout(t)
+      scheduleStartListening(delay)
+      return clearListeningRestart
     }
-  }, [status, startListening])
+  }, [status, scheduleStartListening, clearListeningRestart])
 
   // ─── 마이크 토글 (사용자 액션) ─────────────────────
   const toggleMic = useCallback(() => {
@@ -284,7 +327,7 @@ export default function App() {
     if (!recognitionRef.current) {
       if (!initRecognition()) return
     }
-    if (isListeningRef.current) {
+    if (isListeningRef.current || autoListenRef.current) {
       autoListenRef.current = false
       setAutoListen(false)
       stopListening()
@@ -322,6 +365,8 @@ export default function App() {
   // ─── 아바타 종료 ───────────────────────────────────
   const stopAvatar = useCallback(async () => {
     // STT 중지
+    clearListeningRestart()
+    recognitionStartingRef.current = false
     autoListenRef.current = false
     setAutoListen(false)
     if (recognitionRef.current) {
@@ -352,7 +397,7 @@ export default function App() {
     setVideoReady(false)
     setStatus('idle')
     setMessages([])           // 채팅 초기화 — 깔끔하게 다시 시작
-  }, [])
+  }, [clearListeningRestart])
 
   // ─── 아바타 시작 ───────────────────────────────────
   const startAvatar = useCallback(async () => {
@@ -425,13 +470,13 @@ export default function App() {
         autoListenRef.current = true
         setAutoListen(true)
         // 인사말 끝날 때까지 기다리고 마이크 켜기 (대략 8초 잡아둠 — 인사말 끝 이벤트로 더 정밀해짐)
-        setTimeout(() => startListening(), 8000)
+        scheduleStartListening(8000)
       }
     } catch (e) {
       console.error(e)
       setStatus('idle')
     }
-  }, [initRecognition, startListening])
+  }, [initRecognition, scheduleStartListening])
 
   return (
     <div className={styles.app}>
