@@ -23,18 +23,11 @@ function Message({ msg }) {
   )
 }
 
-function getVisitCount(user) {
-  const rawCount = user?.visit_count ?? user?.visitCount ?? user?.login_count ?? user?.loginCount ?? user?.visits
-  const count = Number(rawCount)
-  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 1
-}
-
 export default function ChatPanel({ messages, isProcessing, onSend, connected, isListening, onToggleMic, micEnabled, user, onLoginClick, onLogout }) {
   const [input, setInput]       = useState('')
   const bottomRef               = useRef(null)
   const textareaRef             = useRef(null)
   const displayName             = user?.name || user?.nickname || '사용자'
-  const visitCount              = getVisitCount(user)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -74,7 +67,7 @@ export default function ChatPanel({ messages, isProcessing, onSend, connected, i
         {user ? (
           <div className={styles.userArea}>
             <span className={`${styles.headerSub} ${styles.userGreeting}`}>
-              {displayName}님 {visitCount}번째 방문을 환영합니다.
+              {displayName}님
             </span>
             <button
               onClick={onLogout}
