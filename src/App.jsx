@@ -52,9 +52,34 @@ function getVisitCount(user) {
   return Number.isFinite(count) && count > 0 ? Math.floor(count) : 1
 }
 
+function getKoreanVisitOrdinal(count) {
+  const ones = ['', '첫', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉']
+  const compoundOnes = ['', '한', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉']
+  const exactTens = {
+    10: '열',
+    20: '스무',
+    30: '서른',
+    40: '마흔',
+    50: '쉰',
+    60: '예순',
+    70: '일흔',
+    80: '여든',
+    90: '아흔',
+  }
+  const compoundTens = { ...exactTens, 20: '스물' }
+
+  if (count > 0 && count < 10) return `${ones[count]}번째`
+  if (count >= 10 && count < 100) {
+    const ten = Math.floor(count / 10) * 10
+    const one = count % 10
+    return one === 0 ? `${exactTens[ten]}번째` : `${compoundTens[ten]}${compoundOnes[one]}번째`
+  }
+  return `${count}번째`
+}
+
 function getVisitGreeting(user) {
   if (!user) return ''
-  return `${getUserDisplayName(user)}님 ${getVisitCount(user)}번째 방문을 환영합니다. `
+  return `${getUserDisplayName(user)}님 ${getKoreanVisitOrdinal(getVisitCount(user))} 방문을 환영합니다. `
 }
 
 async function callProxy(endpoint, payload) {
