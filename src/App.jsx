@@ -541,12 +541,14 @@ export default function App() {
       // 인사말 — 채팅 표시 + 아바타 발화
       const visitGreeting = getVisitGreeting(user)
       const greetingText =
+        '안녕하세요. ' +
         visitGreeting +
-        '안녕하세요. 차의과학대학교 신입생 담임교수 박대근 교수의 AI 면담 어시스턴트예요. ' +
+        '저는 차의과학대학교 신입생 담임교수 박대근 교수의 AI 면담 어시스턴트예요. ' +
         '전공 선택이나 진로에 대해 궁금한 점을 편하게 물어봐 주세요.'
       const greetingTts =
+        '안녕하세요. ' +
         visitGreeting +
-        '안녕하세요. 차 의과학 대학교 신입생 담임 교수 박대근 교수의 에이아이 면담 어시스턴트예요. ' +
+        '저는 차 의과학 대학교 신입생 담임 교수 박대근 교수의 에이아이 면담 어시스턴트예요. ' +
         '전공 선택이나 진로에 대해 궁금한 점을 편하게 물어봐 주세요.'
 
       setMessages([{ role: 'assistant', text: greetingText }])
